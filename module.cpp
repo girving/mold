@@ -2,7 +2,7 @@
 
 #include <other/core/array/Array3d.h>
 #include <other/core/array/convert.h>
-#include <other/core/random/counter.h>
+#include <other/core/random/Sobol.h>
 #include <other/core/python/module.h>
 #include <other/core/python/wrap.h>
 #include <other/core/utility/interrupts.h>
@@ -22,13 +22,6 @@ using std::cout;
 using std::endl;
 using std::asin;
 
-static inline TV sample_offset(const T dx, const Vector<int,3> I) {
-  const auto bits = threefry(uint64_t(I.x)<<32|uint64_t(I.y),I.z);
-  const T scale = ldexp(1,-64)*dx;
-  return vec(scale*uint64_t(bits>>64),
-             scale*uint64_t(bits));
-}
-
 static inline IV floor_div(const IV a, const IV b) {
   const IV q = a/b;
   const IV r = a-q*b;
@@ -40,6 +33,17 @@ static inline IV ceil_div(const IV a, const IV b) {
 }
 
 static Array<Vector<T,2>,3> sample_mold(RawArray<const TV> path, const T radius, const T dx, const IV sizes, const int samples) {
+  // Prepare sample locations
+  Array<TV> sample_offsets(samples,false);
+  if (samples==1)
+    sample_offsets[0] = dx*TV(.5,.5);
+  else {
+    const auto sobol = new_<Sobol<TV>>(Box<TV>(TV(),TV(1,1)));
+    for (auto& x : sample_offsets)
+      x = dx*sobol->vector();
+  }
+
+  // Render
   Array<Vector<T,2>,3> film(Vector<int,3>(sizes,samples)); // angle,time for each pixel sample
   const Box<IV> ibox(IV(),sizes);
   if (path.size()) {
@@ -68,7 +72,7 @@ static Array<Vector<T,2>,3> sample_mold(RawArray<const TV> path, const T radius,
             for (const int j : range(slo.y,shi.y)) {
               const TV base = dx*TV(i,j)-sx0;
               for (const int s : range(samples)) {
-                const TV X = R.inverse_times(base+sample_offset(dx,vec(i,j,s)));
+                const TV X = R.inverse_times(base+sample_offsets[s]);
                 if (abs(X.y)<radius) {
                   const T t = X.x+sqrt(sqr(radius)-sqr(X.y));
                   if (0<t && t<len) {
