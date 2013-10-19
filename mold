@@ -1,0 +1,57 @@
+#!/usr/bin/env python
+
+from __future__ import division
+from other.core import *
+from other.core.value import parser
+from mold import *
+
+# Properties
+props = PropManager()
+sizes = props.add('sizes',(640,480)).set_help('image dimensions')
+radius = props.add('radius',5.).set_help('brush radius')
+dx = props.add('dx',1.).set_help('pixel size')
+samples = props.add('samples',1).set_help('samples per pixel')
+time = props.add('time',100.).set_help('path time')
+dt = props.add('dt',1.).set_help('path time resolution')
+mode = props.add('mode','arc').set_allowed('arc walk'.split()).set_help('path type')
+out = props.add('out','').set_abbrev('o').set_help('output image').set_required(1)
+raw = props.add('raw','').set_help('dump raw sample data to file')
+seed = props.add('seed',7).set_help('random seed')
+parser.parse(props,'Smooth mold renderer',positional=[out])
+
+@cache
+def path():
+  random.seed(seed())
+  L = dx()*sizes()
+  c = L/2
+  if mode()=='arc':
+    r = L.min()/4
+    theta = linspace(0,pi,num=100) 
+    return c+r*polar(theta)
+  elif mode()=='walk':
+    n = time()//dt() 
+    x = sqrt(dt())*random.randn(n,2)
+    return c+cumsum(x,axis=0)
+  else:
+    raise NotImplementedError('Unsupported mode %s'%mode())
+
+@cache
+def angle_film():
+  film = sample_mold(path(),radius(),dx(),sizes(),samples())
+  if raw():
+    savez(raw(),film)
+  return film
+
+@cache
+def color_film():
+  angles,time = rollaxis(angle_film(),-1)
+  film = wheel_color(fmod(2+1/(2*pi)*angles,1))*(time!=0)[...,None]
+  return film.mean(axis=-2)
+
+def main():
+  if raw():
+    assert raw().endswith('.npz')
+  Image.write(out(),color_film())
+
+if __name__=='__main__':
+  main()
