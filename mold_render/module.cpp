@@ -1,20 +1,20 @@
 // Smooth mold renderer
 
-#include <other/core/array/Array3d.h>
-#include <other/core/array/convert.h>
-#include <other/core/random/Sobol.h>
-#include <other/core/python/module.h>
-#include <other/core/python/wrap.h>
-#include <other/core/utility/interrupts.h>
-#include <other/core/utility/ProgressIndicator.h>
-#include <other/core/vector/Rotation.h>
-#include <other/core/vector/Vector.h>
-namespace other {
+#include <geode/array/Array3d.h>
+#include <geode/array/convert.h>
+#include <geode/random/Sobol.h>
+#include <geode/python/module.h>
+#include <geode/python/wrap.h>
+#include <geode/utility/interrupts.h>
+#include <geode/utility/ProgressIndicator.h>
+#include <geode/vector/Rotation.h>
+#include <geode/vector/Vector.h>
+namespace geode {
 ARRAY_CONVERSIONS(3,Vector<double,2>)
 }
 namespace mold {
 
-using namespace other;
+using namespace geode;
 typedef double T;
 typedef Vector<T,2> TV;
 typedef Vector<int,2> IV;
@@ -55,8 +55,8 @@ static Array<Vector<T,2>,3> sample_mold(RawArray<const TV> path, const T radius,
                x1 = path[n+1],
                x01 = x1-x0;
       const T len = magnitude(x01);
-      OTHER_ASSERT(len<100);
-      const T angle = other::angle(x01);
+      GEODE_ASSERT(len<100);
+      const T angle = geode::angle(x01);
       const auto R = Rotation<TV>::from_rotated_vector(TV(1,0),x01);
       const auto box = bounding_box(x0,x1).thickened(radius);
       const Box<IV> ib(IV(floor(box.min)),IV(ceil(box.max)));
@@ -92,6 +92,6 @@ static Array<Vector<T,2>,3> sample_mold(RawArray<const TV> path, const T radius,
 }
 using namespace mold;
 
-OTHER_PYTHON_MODULE(mold_core) {
-  OTHER_FUNCTION(sample_mold)
+GEODE_PYTHON_MODULE(mold_render_core) {
+  GEODE_FUNCTION(sample_mold)
 }

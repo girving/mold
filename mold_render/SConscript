@@ -1,0 +1,4 @@
+Import('env library')
+
+env = env.Clone(use_geode=1)
+library(env,'mold_render_core',['geode'])
