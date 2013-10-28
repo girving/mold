@@ -3,4 +3,6 @@ SConstruct
 setup.cfg
 *.pyc
 .sconsign.dblite
+.sconf_temp
+config.log
 build

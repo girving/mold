@@ -1,4 +1,4 @@
-Import('env library')
+Import('env external library')
 
-env = env.Clone(use_geode=1)
+external(env,'geode',default=1,required=1,libs=['geode'],headers=['geode/utility/config.h'])
 library(env,'mold_render_core',['geode'])
