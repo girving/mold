@@ -14,7 +14,13 @@ EnsureSConsVersion(2,0,0)
 # Read configuration from config.py.
 # As far as I can tell, the scons version of this doesn't allow defining new options in SConscript files.
 sys.path.insert(0,Dir('#').abspath)
-import config
+
+try:
+  import config
+  has_config = True
+except ImportError:
+  has_config = False
+
 del sys.path[0]
 def options(env,*vars):
   for name,help,default in vars:
@@ -26,8 +32,10 @@ def options(env,*vars):
       except ValueError:
         pass
       env[name] = value
-    else:
+    elif has_config:
       env[name] = config.__dict__.get(name,default)
+    else:
+      env[name] = default
 
 # Base environment
 env = Environment(tools=['default','pdflatex','pdftex'],TARGET_ARCH='x86') # TARGET_ARCH applies only on Windows
@@ -38,9 +46,6 @@ windows = env['PLATFORM']=='win32'
 if not windows:
   env.Replace(ENV=os.environ)
 verbose = True
-
-# Locate geode in case we're in a different directory
-env['geode'] = os.path.normpath(os.path.dirname(os.path.realpath(File('#SConstruct').abspath)))
 
 # Default base directory
 if darwin:
@@ -53,6 +58,12 @@ if darwin:
     die("We're on Mac, but neither /opt/local or /usr/local exists.  Geode requires either MacPorts or Homebrew.")
 else:
   env.Replace(base='/usr')
+
+# install or develop only if explicitly asked for on the command line
+env['install'] = 'install' in COMMAND_LINE_TARGETS
+env['develop'] = 'develop' in COMMAND_LINE_TARGETS
+if env['develop']:
+  env.Alias('develop',[])
 
 # Base options
 options(env,
@@ -94,6 +105,9 @@ options(env,
   ('mpicc','MPI wrapper compiler (used only to extract flags)','<detect>'),
   ('qtdir','Top level Qt dir (autodetect by default)',''))
 assert env['real'] in ('float','double')
+
+# Make a pristine environment for latex use
+latex_env = env.Clone()
 
 # Extra flag options
 env.Append(CXXFLAGS=env['cxxflags_extra'])
@@ -140,7 +154,9 @@ if env['cache']!='':
   CacheDir(env['cache'])
 
 # Make a variant-independent environment for building python modules
-python_env = env.Clone()
+python_env = env.Clone(SHLIBPREFIX='',LINK=env['cxx'])
+if darwin:
+  python_env.Replace(LDMODULESUFFIX='.so',SHLIBSUFFIX='.so')
 
 # Variant build setup
 env['variant_build'] = os.path.join('build',env['arch'],env['type'])
@@ -247,10 +263,6 @@ if env['openmp']:
 # Turn off boost::exceptions to avoid completely useless code bloat
 env.Append(CPPDEFINES=['BOOST_EXCEPTION_DISABLE'])
 
-# Darwin specific options
-if darwin:
-  env.Replace(LDMODULESUFFIX='.so')
-
 # Work around apparent bug in variable expansion
 env.Replace(prefix_lib=env.subst(env['prefix_lib']))
 
@@ -267,6 +279,13 @@ def external(env,name,default=0,dir=0,flags='',cxxflags='',linkflags='',cpppath=
       print>>sys.stderr, 'FATAL: %s is required'%name
       Exit(1)
 
+  # Do we want to use this external?
+  Help('\n')
+  options(env,('use_'+name,'Use '+name+' if available',1))
+  if not env['use_'+name]:
+    fail()
+    return
+
   for r in requires:
     if not env['use_'+r]:
       if verbose:
@@ -278,6 +297,7 @@ def external(env,name,default=0,dir=0,flags='',cxxflags='',linkflags='',cpppath=
          'rpath':rpath,'libs':libs,'copy':copy,'frameworkpath':frameworkpath,'frameworks':frameworks,'requires':requires,
          'hide':hide,'callback':callback,'name':name}
   env['need_'+name] = default
+  externals[name] = lib
 
   # Make sure empty lists are copied and do not refer to the same object
   for n in lib:
@@ -286,7 +306,6 @@ def external(env,name,default=0,dir=0,flags='',cxxflags='',linkflags='',cpppath=
 
   Help('\n')
   options(env,
-    ('use_'+name,'Use '+name+' if available',1),
     (name+'_dir','Base directory for '+name,dir),
     (name+'_include','Include directory for '+name,0),
     (name+'_libpath','Library directory for '+name,0),
@@ -300,13 +319,6 @@ def external(env,name,default=0,dir=0,flags='',cxxflags='',linkflags='',cpppath=
     (name+'_requires','Required libraries for '+name,0),
     (name+'_pkgconfig','pkg-config names for '+name,0),
     (name+'_callback','Arbitrary environment modification callback for '+name,0))
-
-  # Do we want to use this external?
-  if env['use_'+name]:
-    externals[name] = lib
-  else:
-    fail()
-    return
 
   # Absorb settings
   if env[name+'_pkgconfig']!=0: lib['pkg-config']=env[name+'_pkgconfig']
@@ -340,7 +352,11 @@ def external(env,name,default=0,dir=0,flags='',cxxflags='',linkflags='',cpppath=
 
   # Check whether the external is usable
   if configure is not None:
-    has = configure(env,lib)
+    has = configure if isinstance(configure,bool) else configure(env,lib)
+    if not has:
+      env['use_'+name] = 0
+      del externals[name]
+      fail()
   else:
     assert headers is not None
 
@@ -361,7 +377,7 @@ def external(env,name,default=0,dir=0,flags='',cxxflags='',linkflags='',cpppath=
       r = context.TryLink(source,extension='.cpp')
       context.Result(r)
       return r
-    conf = env_conf.Configure(custom_tests={'Check':check},clean=0,help=0)
+    conf = env_conf.Configure(custom_tests={'Check':check})
     if not conf.Check():
       env['use_'+name] = 0
       del externals[name]
@@ -398,7 +414,7 @@ def link_flags(env):
   workaround = env.get('need_qt',0)
 
   for name,lib in externals.items():
-    if env['need_'+name]:
+    if env_link['need_'+name]:
       all_uses.append('need_'+name)
       env_link.Append(LINKFLAGS=lib['linkflags'],LIBS=lib['libs'],FRAMEWORKPATH=lib['frameworkpath'],FRAMEWORKS=lib['frameworks'])
       env_link.AppendUnique(LIBPATH=lib['libpath'])
@@ -475,6 +491,20 @@ if windows:
   python_libs = []
   projects = []
 
+# Target must be a directory!
+def install_or_link(env,target,src):
+  if env['install'] or env['develop']:
+    # Get the real location of src
+    srcpath = File(src).abspath
+    if not os.path.exists(srcpath):
+      srcpath = File(src).srcnode().abspath
+      if not os.path.exists(srcpath):
+        raise RuntimeError("can't find %s in either source or build directories"%src)
+    if env['install']:
+      env.Alias('install',env.Install(target,srcpath))
+    elif env['develop']:
+      env.Execute("d='%s' && mkdir -p $$$$d && ln -sf '%s' $$$$d"%(target,srcpath))
+
 def library(env,name,libs=(),skip=(),extra=(),skip_all=False,no_exports=False,pyname=None):
   if name in env['skip_libs']:
     return
@@ -496,9 +526,8 @@ def library(env,name,libs=(),skip=(),extra=(),skip_all=False,no_exports=False,py
     env.Append(CPPDEFINES=qt['flags'],CXXFLAGS=qt['cxxflags'])
 
   # Install headers
-  header_dir = os.path.join(env['prefix_include'],Dir('.').srcnode().path)
   for h in headers:
-    env.Alias('install',env.Install(os.path.join(header_dir,os.path.dirname(h)),h))
+    install_or_link(env, os.path.join(env['prefix_include'], Dir('.').srcnode().path, os.path.dirname(h)), h)
 
   # Tell the compiler which library we're building
   env.Append(CPPDEFINES=['BUILDING_'+name])
@@ -519,7 +548,6 @@ def library(env,name,libs=(),skip=(),extra=(),skip_all=False,no_exports=False,py
   else:
     lib = env.StaticLibrary(path,source=sources)
   env.Depends('.',lib)
-
   # Install dlls in bin, lib and exp in lib
   if windows:
     installed = []
@@ -533,12 +561,14 @@ def library(env,name,libs=(),skip=(),extra=(),skip_all=False,no_exports=False,py
     if 'module.cpp' in cpps:
       python_libs.append(lib)
   else:
-    env.Alias('install',env.Install(env['prefix_lib'],lib))
+    for l in lib:
+      install_or_link(env, env['prefix_lib'], l)
     if env['use_python']:
       if pyname is None:
         pyname = name
       module = os.path.join('#'+Dir('.').srcnode().path,pyname)
-      python_env.LoadableModule(module,source=[],LIBS=name,LIBPATH=[libpath],SHLIBPREFIX='',LINK=env['cxx'])
+      module = python_env.LoadableModule(module,source=[],LIBS=name,LIBPATH=[libpath])
+      python_env.Depends(module,lib) # scons doesn't always notice this (obvious) dependency
 
 # Build a program
 def program(env,name,cpp=None):
@@ -549,42 +579,45 @@ def program(env,name,cpp=None):
   env = link_flags(env)
   env = copy_files(env)
   files = objects(env,cpp)
-  bin = env.Program(name,files)
+  bin = env.Program('#'+os.path.join(env['variant_build'],'bin',name),files)
   env.Depends('.',bin)
-  env.Alias('install',env.Install(env['prefix_bin'],bin))
+  for b in bin:
+    install_or_link(env, env['prefix_bin'], b)
 
 # Install a (possibly directory) resource
 def resource(env,dir):
-  # if dir is a directory, add a dependency for each file found in its subtree
-  if os.path.isdir(str(Dir(dir).srcnode())):
+  # if we are installing, and we're adding a directory, add a dependency for each file found in its subtree
+  if env['install'] and os.path.isdir(str(Dir(dir).srcnode())):
     def visitor(basedir, dirname, names):
       reldir = os.path.relpath(dirname, basedir)
       for name in names:
         fullname = os.path.join(dirname, name)
-        env.Alias('install', env.Install(os.path.join(env['prefix_share'], reldir), fullname))
+        install_or_link(env, os.path.join(env['prefix_share'], reldir), fullname)
     basedir = str(Dir('.').srcnode())
     os.path.walk(str(Dir(dir).srcnode()), visitor, basedir)
   else:
-    env.Alias('install', env.Install(env['prefix_share'], Dir(dir).srcnode()))
+    # if we're just making links, a single link is enough even if it's a directory
+    install_or_link(env, env['prefix_share'], Dir(dir).srcnode())
 
 # Configure latex
 def configure_latex():
   def check(context):
     context.Message('checking for latex: ')
-    r = context.TryBuild(env.PDF,text=r'\documentclass{book}\begin{document}\end{document}',extension='.tex')
+    r = context.TryBuild(latex_env.PDF,text=r'\documentclass{book}\begin{document}\end{document}',extension='.tex')
     context.Result(r)
     return r
-  conf = env.Configure(custom_tests={'Check':check},clean=0,help=0)
+  conf = latex_env.Configure(custom_tests={'Check':check})
   if not conf.Check():
-    env['use_latex'] = 0
+    latex_env['use_latex'] = 0
   conf.Finish()
-if env['use_latex']:
+if latex_env['use_latex']:
   configure_latex()
 
 # Turn a latex document into a pdf
-def latex(env,name):
-  if env['use_latex'] and env['type']=='release':
-    env.Install(Dir('.').srcnode(),env.PDF(name+'.pdf',name+'.tex'))
+def latex(name):
+  if latex_env['use_latex']:
+    pdf = os.path.join('#'+Dir('.').srcnode().path,name+'.pdf')
+    latex_env.PDF(pdf,name+'.tex')
 
 # Automatic python configuration
 def configure_python(env,python):
@@ -680,7 +713,7 @@ def blas_variants():
   body = ['  cblas_dscal(0,1,0,1);']
   external(env,'atlas',libs=['cblas','lapack','atlas'],headers=['cblas.h'],body=body)
   external(env,'openblas',libs=['lapack','blas'],headers=['cblas.h'],body=body)
-  if darwin: external(env,'accelerate',frameworks=['Accelerate'],headers=['cblas.h'],body=body)
+  if darwin: external(env,'accelerate',frameworks=['Accelerate'],headers=['Accelerate/Accelerate.h'],body=body)
   if windows: external(env,'mkl',flags=['GEODE_MKL'],headers=['mkl_cblas.h'],body=body,libs='mkl_intel_lp64 mkl_intel_thread mkl_core mkl_mc iomp5 mkl_lapack'.split())
   else:       external(env,'mkl',flags=['GEODE_MKL'],headers=['mkl_cblas.h'],body=body,linkflags='-Wl,--start-group -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core -lmkl_mc -liomp5 -lmkl_lapack -Wl,--end-group -fopenmp -pthread')
 blas_variants()
@@ -707,7 +740,7 @@ def child(env,dir):
   env.SConscript('#'+os.path.join(path,'SConscript'),exports='env')
 
 # Descend into all child SConscripts in order of priority
-def children(env):
+def children(env,skip=()):
   # Directories that define externals used by other directories must come first.
   # Therefore, we sort children with .priority files first in increase order of priority.
   def priority(dir):
@@ -718,11 +751,12 @@ def children(env):
   base = Dir('.').srcnode().abspath+'/'
   dirs = [s[len(base):-11] for s in glob.glob(base+'*/SConscript')]
   for dir in sorted(dirs,key=priority):
-    if os.path.exists(File(os.path.join(dir,'SConscript')).srcnode().abspath):
+    if dir not in skip and os.path.exists(File(os.path.join(dir,'SConscript')).srcnode().abspath):
       child(env,dir)
 
 # Build everything
-Export('child children options external externals library objects program latex clang posix darwin windows resource')
+Export('''child children options external externals library objects program latex
+          clang posix darwin windows resource install_or_link''')
 if os.path.exists(File('#SConscript').abspath):
   child(env,'.')
 else:
